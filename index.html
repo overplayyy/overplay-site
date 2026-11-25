@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>overplay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&display=swap">
+<style>
+/* One terminal session on a character grid. Two colours, one text size; only ASCII art scales down to fit. */
+:root {
+  --bg: #000;
+  --fg: #fff;
+  --mono: "SF Mono", Menlo, "JetBrains Mono", Monaco, Consolas, "Courier New", monospace;
+  --size: 14px;
+  --cw: .6;                 /* cell width / font size, measured at load */
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--size);
+  line-height: 1.4;
+  font-variant-emoji: text;
+  -webkit-text-size-adjust: 100%;
+}
+#term {
+  min-height: 100vh;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 40vh;
+  cursor: text;
+}
+.line { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.4em; }
+.art {
+  white-space: pre; line-height: 1; overflow: hidden;
+  margin-block: .5em;
+}
+.rule { white-space: pre; overflow: hidden; }
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.4em calc(var(--cw) * 2em); margin-block: .5em; }
+.cols > div { min-width: 0; }
+.sq {
+  display: inline-block;
+  width: calc(var(--cw) * 1em);
+  transform: scaleX(var(--k));
+  transform-origin: left;
+}
+a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+a:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+.cursor { animation: blink 1s steps(1) infinite; }
+.cursor.solid { animation: none; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+#key {
+  position: fixed; left: 0; bottom: 0; width: 1px; height: 1px;
+  opacity: 0; border: 0; padding: 0; font-size: 16px; /* 16px stops iOS zooming on focus */
+  background: transparent; color: transparent;
+}
+</style>
+
+<main id="term" aria-live="polite"></main>
+<input id="key" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="terminal input">
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- content that isn't in the folder ----------
+  // whoami -> assets/whoami.txt · whereami -> assets/banner.txt + assets/whereami.txt
+  var CONNECT = [
+    ['email', 'cddc.overplay@gmail.com', 'mailto:cddc.overplay@gmail.com'],
+    ['instagram', '@overplayyy', 'https://www.instagram.com/overplayyy/'],
+    ['youtube', '@overplayyy', 'https://www.youtube.com/@overplayyy'],
+    ['soundcloud', 'overplayyy', 'https://soundcloud.com/overplayyy']
+    // ['spotify', 'overplay', '<artist url>'], ['apple music', 'overplay', '<artist url>']
+  ];
+  var STARTUP = ['▶', 'whoami', 'whereami', 'render', 'music', 'connect', 'help'];
+
+  // ---------- timing ----------
+  var still = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var T = still ? { type: 0, line: 0, row: 0, gap: 0 } : { type: 38, line: 22, row: 7, gap: 260 };
+  function wait(ms) { return ms ? new Promise(function (r) { setTimeout(r, ms); }) : Promise.resolve(); }
+
+  // ---------- grid ----------
+  var term = document.getElementById('term');
+  var key = document.getElementById('key');
+  var BASE = 14, CW = 0.6, squeezeK = {};
+  var mctx = document.createElement('canvas').getContext('2d');
+  function measure() {
+    var fam = getComputedStyle(document.body).fontFamily;
+    mctx.font = '100px ' + fam;
+    CW = mctx.measureText('M').width / 100;
+    document.documentElement.style.setProperty('--cw', CW);
+    squeezeK = {};
+  }
+  function k(ch) {
+    if (!(ch in squeezeK)) {
+      var w = mctx.measureText(ch).width / 100;
+      squeezeK[ch] = w > 0 && Math.abs(w - CW) / CW > 0.01 ? CW / w : 1;
+    }
+    return squeezeK[ch];
+  }
+  function esc(s) { return s.replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  // Escape text; glyphs that aren't exactly one cell wide get squeezed into one.
+  function cells(s) {
+    var out = '';
+    for (var ch of s) {
+      if (ch.charCodeAt(0) > 126 && k(ch) !== 1) out += '<span class="sq" style="--k:' + k(ch).toFixed(4) + '">' + esc(ch) + '</span>';
+      else out += esc(ch);
+    }
+    return out;
+  }
+  function width() { var cs = getComputedStyle(term); return term.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); }
+  function textCols() { return Math.floor(width() / (CW * BASE)); }
+  function fitArt(el) {
+    var cols = +el.dataset.cols || 1;
+    el.style.fontSize = Math.min(BASE, el.clientWidth / (cols * CW)) + 'px';
+  }
+  window.addEventListener('resize', function () { document.querySelectorAll('.art').forEach(fitArt); });
+
+  // ---------- output ----------
+  function scroll() { window.scrollTo(0, document.documentElement.scrollHeight); }
+  // Output goes before the prompt, or into a column when printing side by side.
+  var target = null;
+  function place(el) { if (target) target.appendChild(el); else term.insertBefore(el, prompt.el); return el; }
+  function lineEl(html, cls) { var d = document.createElement('div'); d.className = cls || 'line'; d.innerHTML = html; return place(d); }
+
+  // An output is a list of items: a string, {html}, {link:[label,url,pre]}, {art:text}, {rule:1},
+  // or {columns:[items, items, ...]} printed left to right in a two-column grid.
+  async function print(items) {
+    for (var it of items) {
+      if (typeof it === 'string') { lineEl(cells(it)); await wait(T.line); }
+      else if (it.html != null) { lineEl(it.html); await wait(T.line); }
+      else if (it.rule) { lineEl(cells('-'.repeat(400)), 'line rule'); await wait(T.line); }
+      else if (it.link) {
+        var pre = it.link[2] ? cells(it.link[2]) : '';
+        lineEl(pre + '<a href="' + esc(it.link[1]) + '" target="_blank" rel="noopener">' + cells(it.link[0]) + '</a>');
+        await wait(T.line);
+      } else if (it.columns) {
+        var grid = place(document.createElement('div')); grid.className = 'cols';
+        var outer = target;
+        for (var col of it.columns) {
+          target = grid.appendChild(document.createElement('div'));
+          await print(col);
+          target = outer;
+        }
+      } else if (it.art != null) {
+        var rows = it.art.split('\n');
+        var cols = rows.reduce(function (m, r) { return Math.max(m, [...r].length); }, 1);
+        var el = document.createElement('div');
+        el.className = 'art'; el.dataset.cols = cols; el.setAttribute('role', 'img');
+        el.setAttribute('aria-label', it.alt || 'ascii image');
+        place(el); fitArt(el);
+        if (!T.row) el.innerHTML = rows.map(cells).join('\n');
+        else for (var i = 0; i < rows.length; i++) {
+          el.insertAdjacentHTML('beforeend', (i ? '\n' : '') + cells(rows[i]));
+          if (i % 2) { scroll(); await wait(T.row); }
+        }
+      }
+      scroll();
+    }
+  }
+
+  // ---------- prompt ----------
+  var prompt = { el: document.createElement('div'), busy: true, text: '' };
+  prompt.el.className = 'line';
+  term.appendChild(prompt.el);
+  function renderPrompt(solid) {
+    prompt.el.innerHTML = cells(cwdLabel() + ' > ' + prompt.text) +
+      '<span class="cursor' + (solid ? ' solid' : '') + '">' + cells('▶') + '</span>';
+  }
+  function commitPrompt() { lineEl(cells(cwdLabel() + ' > ' + prompt.text)); prompt.text = ''; }
+
+  // ---------- file system ----------
+  // The overplay folder sits at /Users/overplay, the only user; that's home (~) and the start folder.
+  var FS = null, HOME = ['Users', 'overplay'], cwd = HOME.slice();
+  function cwdLabel() { return cwd.length ? cwd.join('/') : '/'; }
+  function home(parts) { return nodeAt(HOME.concat(parts)); }
+  function nodeAt(parts) {
+    var n = FS;
+    for (var p of parts) { if (!n || n.type !== 'dir' || !n.children[p]) return null; n = n.children[p]; }
+    return n;
+  }
+  function resolve(path) {
+    path = path || '~';
+    var tilde = path === '~' || path.indexOf('~/') === 0;
+    var parts = tilde ? HOME.slice() : path[0] === '/' ? [] : cwd.slice();
+    path.replace(/^~/, '').split('/').forEach(function (p) {
+      if (!p || p === '.') return;
+      if (p === '..') parts.pop(); else parts.push(p);
+    });
+    return parts;
+  }
+  function quote(name) { return /[\s'"]/.test(name) ? "'" + name + "'" : name; }
+  function split(line) {
+    var args = [], cur = '', q = null, has = false;
+    for (var i = 0; i < line.length; i++) {
+      var c = line[i];
+      if (q) { if (c === q) q = null; else cur += c; continue; }
+      if (c === '"' || c === "'") { q = c; has = true; continue; }
+      if (c === '\\' && i + 1 < line.length) { cur += line[++i]; has = true; continue; }
+      if (/\s/.test(c)) { if (cur || has) args.push(cur); cur = ''; has = false; continue; }
+      cur += c;
+    }
+    if (cur || has) args.push(cur);
+    return args;
+  }
+
+  // ---------- songs ----------
+  // Square ASCII frame around a cover.
+  function frame(text) {
+    var rows = text.split('\n');
+    var w = rows.reduce(function (m, r) { return Math.max(m, [...r].length); }, 0);
+    var edge = '+' + '-'.repeat(w + 2) + '+';
+    return [edge].concat(rows.map(function (r) { return '| ' + r + ' '.repeat(w - [...r].length) + ' |'; }), [edge]).join('\n');
+  }
+  function songView(name, s) {
+    var out = [];
+    if (s.cover) out.push({ art: frame(s.cover), alt: name + ' cover' });
+    out.push(s.title || name);
+    var i = s.info || {};
+    if (i.release) out.push((s.released ? 'released ' : 'out ') + i.release);
+    else if (s.released) out.push('out now');
+    if (i.wav) out.push({ link: ['download ' + (s.title || name) + '.wav', i.wav, '  '] });
+    if (i.spotify) out.push({ link: ['spotify', i.spotify, '  '] });
+    if (i.apple) out.push({ link: ['apple music', i.apple, '  '] });
+    if (!s.released && i.presave) out.push({ link: ['pre-save', i.presave, '  '] });
+    return out;
+  }
+  function songs(kind) {
+    var d = home(['music', kind]); if (!d) return [];
+    return Object.keys(d.children).filter(function (n) { return d.children[n].type === 'song'; })
+      .map(function (n) { return { name: n, s: d.children[n] }; });
+  }
+  function byDate(a, b) { return (b.s.info.release || '').localeCompare(a.s.info.release || ''); }
+  function textOf(parts) { var n = home(parts); return n && n.text != null ? n.text : null; }
+
+  // ---------- commands ----------
+  var COMMANDS = {
+    '▶': { help: 'start overplay', run: function () {
+      var logo = textOf(['assets', 'logo.txt']);
+      var out = ['initializing overplay', '[====================] 100%'];
+      if (logo) out.push({ art: logo, alt: 'overplay logo' });
+      return out;
+    } },
+    whoami: { help: 'who overplay is', run: function () {
+      var t = textOf(['assets', 'whoami.txt']);
+      return t ? t.split('\n') : ['overplay'];
+    } },
+    whereami: { help: 'where overplay is', run: function () {
+      var b = textOf(['assets', 'banner.txt']), t = textOf(['assets', 'whereami.txt']);
+      return (b ? [{ art: b, alt: 'overplay banner' }] : []).concat(t ? t.split('\n') : []);
+    } },
+    render: { help: 'press photos and video', run: function () { return ['no press photos or videos yet. check back soon.']; } },
+    music: { help: 'new and upcoming releases', run: function () {
+      // last two releases + the next planned one, left to right in release order
+      var rel = songs('released').sort(byDate).slice(0, 2).reverse();
+      var today = new Date().toISOString().slice(0, 10);
+      var next = songs('planned').filter(function (x) { return x.s.info.release && x.s.info.release >= today; })
+        .sort(function (a, b) { return a.s.info.release.localeCompare(b.s.info.release); })[0];
+      var list = rel.concat(next ? [next] : []);
+      if (!list.length) return ['no releases yet.'];
+      return [{ columns: list.map(function (x) { return songView(x.name, x.s); }) }];
+    } },
+    connect: { help: 'contact and links', run: function () {
+      return CONNECT.map(function (c) { return { link: [c[1], c[2], (c[0] + '            ').slice(0, 12)] }; });
+    } },
+    ls: { help: 'list a folder', usage: 'ls [path]', run: function (args) {
+      var targets = args.length ? args : ['.'], out = [];
+      targets.forEach(function (t, ti) {
+        var p = resolve(t), n = nodeAt(p);
+        if (!n) { out.push('ls: ' + t + ': no such file or directory'); return; }
+        if (targets.length > 1) { if (ti) out.push(''); out.push(t + ':'); }
+        if (n.type !== 'dir') { out.push(quote(p[p.length - 1])); return; }
+        var names = Object.keys(n.children).map(function (c) { return quote(c) + (n.children[c].type === 'dir' ? '/' : ''); });
+        if (names.length) out.push(names.join('  '));
+      });
+      return out;
+    } },
+    cd: { help: 'change folder', usage: 'cd [path]', run: function (args) {
+      var p = resolve(args[0] || '~'), n = nodeAt(p);
+      if (!n) return ['cd: ' + args[0] + ': no such file or directory'];
+      if (n.type !== 'dir') return ['cd: ' + args[0] + ': not a directory'];
+      cwd = p; return [];
+    } },
+    cat: { help: 'print a file or song', usage: 'cat <file>', run: function (args) {
+      if (!args.length) return ['usage: cat <file>'];
+      var out = [];
+      args.forEach(function (t) {
+        var p = resolve(t), n = nodeAt(p), name = p[p.length - 1];
+        if (!n) { out.push('cat: ' + t + ': no such file or directory'); return; }
+        if (n.type === 'dir') { out.push('cat: ' + t + ': is a directory'); return; }
+        if (n.type === 'song') { out = out.concat(songView(name, n)); return; }
+        if (n.text != null) {
+          var rows = n.text.split('\n');
+          var wide = rows.some(function (r) { return [...r].length > textCols(); });
+          if (wide) out.push({ art: n.text, alt: name }); else out = out.concat(rows);
+          return;
+        }
+        if (n.url) { out.push({ link: ['open ' + name, n.url] }); return; }
+        out.push('cat: ' + name + ': not available online');
+      });
+      return out;
+    } },
+    clear: { help: 'clear the screen', run: function () {
+      Array.from(term.children).forEach(function (c) { if (c !== prompt.el) c.remove(); }); return [];
+    } },
+    help: { help: 'this list', run: function () {
+      return ['commands:'].concat(Object.keys(COMMANDS).filter(function (c) { return c !== '▶'; }).map(function (c) {
+        var u = COMMANDS[c].usage || c;
+        return '  ' + (u + '            ').slice(0, 12) + COMMANDS[c].help;
+      }));
+    } }
+  };
+
+  async function run(line) {
+    var args = split(line.trim());
+    if (!args.length) return;
+    var name = args.shift(), cmd = COMMANDS[name] || COMMANDS[name.toLowerCase()];
+    var out = cmd ? cmd.run(args) : ['command not found: ' + name];
+    if (out.length) await print(out.concat([{ rule: 1 }]));
+  }
+
+  // ---------- typing ----------
+  var history = [], hIdx = 0;
+  async function typeAndRun(cmd) {
+    for (var ch of cmd) { prompt.text += ch; renderPrompt(true); await wait(T.type); }
+    renderPrompt(true); await wait(T.gap / 2);
+    commitPrompt(); renderPrompt(true);
+    await run(cmd);
+    await wait(T.gap);
+  }
+
+  function complete() {
+    var text = prompt.text, args = split(text);
+    var endsSpace = /\s$/.test(text);
+    if (args.length <= 1 && !endsSpace) {
+      var m = Object.keys(COMMANDS).filter(function (c) { return c.indexOf(args[0] || '') === 0 && c !== '▶'; });
+      if (m.length === 1) prompt.text = m[0] + ' ';
+      else if (m.length > 1) return print([m.join('  ')]);
+      return;
+    }
+    var last = endsSpace ? '' : args[args.length - 1];
+    var slash = last.lastIndexOf('/');
+    var dirPart = slash >= 0 ? last.slice(0, slash + 1) : '', base = slash >= 0 ? last.slice(slash + 1) : last;
+    var dir = nodeAt(resolve(dirPart || '.'));
+    if (!dir || dir.type !== 'dir') return;
+    var hits = Object.keys(dir.children).filter(function (n) { return n.toLowerCase().indexOf(base.toLowerCase()) === 0; });
+    if (!hits.length) return;
+    if (hits.length > 1) {
+      var pre = hits.reduce(function (a, b) { var i = 0; while (i < a.length && a[i].toLowerCase() === (b[i] || '').toLowerCase()) i++; return a.slice(0, i); });
+      if (pre.length <= base.length) return print([hits.map(quote).join('  ')]);
+      hits = [pre];
+    }
+    var h = hits[0], node = dir.children[h];
+    var full = (dirPart + h).replace(/ /g, '\\ ') + (node && node.type === 'dir' ? '/' : (node ? ' ' : ''));
+    var keep = text.slice(0, text.length - (endsSpace ? 0 : rawLastToken(text).length));
+    prompt.text = keep + full;
+  }
+  function rawLastToken(text) { var m = text.match(/((?:\\.|[^\s\\])+)$/); return m ? m[1] : ''; }
+
+  // After startup, typing always lands; Enter while a command is still printing queues the line.
+  var queue = [], running = false, completing = null;
+  async function drain() {
+    if (running) return;
+    running = true;
+    while (queue.length) {
+      var line = queue.shift();
+      var typedAhead = prompt.text;
+      prompt.text = line; commitPrompt(); prompt.text = typedAhead; renderPrompt(true);
+      await run(line);
+      renderPrompt(); scroll();
+    }
+    running = false; renderPrompt(); scroll();
+  }
+  key.addEventListener('keydown', async function (e) {
+    if (prompt.busy) { e.preventDefault(); return; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (completing) await completing;
+      var line = prompt.text;
+      if (line.trim()) { history.push(line); }
+      hIdx = history.length;
+      prompt.text = ''; key.value = '';
+      queue.push(line); drain();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      completing = (async function () {
+        while (running || queue.length) await wait(30);
+        await complete();
+        key.value = prompt.text; renderPrompt(); scroll();
+      })();
+      await completing; completing = null;
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      hIdx = Math.max(0, Math.min(history.length, hIdx + (e.key === 'ArrowUp' ? -1 : 1)));
+      prompt.text = history[hIdx] || ''; key.value = prompt.text; renderPrompt();
+    } else if (e.key === 'l' && e.ctrlKey) {
+      e.preventDefault(); COMMANDS.clear.run(); renderPrompt();
+    }
+  });
+  key.addEventListener('input', function () {
+    if (prompt.busy) { key.value = prompt.text; return; }
+    prompt.text = key.value.replace(/\n/g, ''); renderPrompt(); scroll();
+  });
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('a')) return;
+    if (window.getSelection && String(window.getSelection())) return; // let people select text
+    key.focus({ preventScroll: true });
+  });
+  document.addEventListener('keydown', function (e) {
+    if (document.activeElement !== key && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) key.focus({ preventScroll: true });
+  });
+
+  // ---------- boot ----------
+  async function boot() {
+    try { await document.fonts.ready; } catch (e) {}
+    measure();
+    renderPrompt(true);
+    try {
+      var data = await (await fetch('fs.json')).json();
+      FS = { type: 'dir', children: { Users: { type: 'dir', children: { overplay: data.tree } } } };
+    } catch (e) {
+      FS = { type: 'dir', children: { Users: { type: 'dir', children: { overplay: { type: 'dir', children: {} } } } } };
+      await print(['could not load files. refresh to try again.']);
+    }
+    renderPrompt(true);
+    for (var c of STARTUP) await typeAndRun(c);
+    prompt.busy = false; renderPrompt(); scroll();
+    key.focus({ preventScroll: true });
+  }
+  boot();
+})();
+</script>
