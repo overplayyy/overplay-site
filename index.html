@@ -31,7 +31,7 @@ body {
   min-height: 100vh;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
-  padding-block: 16px 40vh;
+  padding-block: 16px max(12px, env(safe-area-inset-bottom, 0px));
   cursor: text;
 }
 .line { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.4em; }
@@ -81,7 +81,7 @@ a:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
 
   // ---------- timing ----------
   var still = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var T = still ? { type: 0, line: 0, row: 0, gap: 0 } : { type: 38, line: 22, row: 7, gap: 260 };
+  var T = still ? { type: 0, line: 0, row: 0, gap: 0, pause: 0 } : { type: 75, line: 90, row: 18, gap: 300, pause: 3000 };
   function wait(ms) { return ms ? new Promise(function (r) { setTimeout(r, ms); }) : Promise.resolve(); }
 
   // ---------- grid ----------
@@ -328,10 +328,9 @@ a:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
   var history = [], hIdx = 0;
   async function typeAndRun(cmd) {
     for (var ch of cmd) { prompt.text += ch; renderPrompt(true); await wait(T.type); }
-    renderPrompt(true); await wait(T.gap / 2);
+    renderPrompt(true); await wait(T.gap);
     commitPrompt(); renderPrompt(true);
     await run(cmd);
-    await wait(T.gap);
   }
 
   function complete() {
@@ -428,7 +427,10 @@ a:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
       await print(['could not load files. refresh to try again.']);
     }
     renderPrompt(true);
-    for (var c of STARTUP) await typeAndRun(c);
+    for (var i = 0; i < STARTUP.length; i++) {
+      await typeAndRun(STARTUP[i]);
+      if (i < STARTUP.length - 1) await wait(T.pause); // 3s between a response and the next command
+    }
     prompt.busy = false; renderPrompt(); scroll();
     key.focus({ preventScroll: true });
   }
